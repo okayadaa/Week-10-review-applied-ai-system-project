@@ -110,9 +110,26 @@ class DocuBot:
 
         Return a list of (filename, text) sorted by score descending.
         """
-        results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        # Build a fast filename -> text lookup to avoid O(n) scans per candidate
+        doc_lookup = {filename: text for filename, text in self.documents}
+
+        # Step 1: Find candidate documents using the index
+        candidates = set()
+        for word in query.lower().split():
+            word = word.strip(string.punctuation)
+            if word in self.index:
+                candidates.update(self.index[word])
+
+        # Step 2: Score each candidate document
+        scored = []
+        for filename in candidates:
+            text = doc_lookup[filename]
+            score = self.score_document(query, text)
+            scored.append((score, filename, text))
+
+        # Step 3: Sort by score descending, return top k (filename, text) pairs
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [(filename, text) for score, filename, text in scored][:top_k]
 
     # -----------------------------------------------------------
     # Answering Modes
@@ -165,3 +182,7 @@ class DocuBot:
 
 if __name__ == "__main__":
     bot = DocuBot() 
+
+    query = "Where is the auth token generated?"
+    result = bot.retrieve(query, 1)
+    
