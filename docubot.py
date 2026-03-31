@@ -10,6 +10,7 @@ Core DocuBot class responsible for:
 import os
 import glob
 import string
+from typing import List, Tuple, Dict
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -49,7 +50,7 @@ class DocuBot:
     # Index Construction (Phase 1)
     # -----------------------------------------------------------
 
-    def build_index(self, documents):
+    def build_index(self, documents: List[Tuple]) -> Dict:
         """
         TODO (Phase 1):
         Build a tiny inverted index mapping lowercase words to the documents
@@ -68,6 +69,7 @@ class DocuBot:
         # TODO: implement simple indexing
         for filename, text_body in documents: 
             for word in text_body.lower().split(): 
+                word = word.strip(string.punctuation)
                 if word not in string.punctuation: 
                     index.setdefault(word, set()).add(filename)
 
@@ -77,7 +79,7 @@ class DocuBot:
     # Scoring and Retrieval (Phase 1)
     # -----------------------------------------------------------
 
-    def score_document(self, query, text):
+    def score_document(self, query: str, text: str) -> int:
         """
         TODO (Phase 1):
         Return a simple relevance score for how well the text matches the query.
@@ -88,7 +90,18 @@ class DocuBot:
         - Return the count as the score
         """
         # TODO: implement scoring
-        return 0
+        q = set()
+        for word in query.lower().split(): 
+             if word not in string.punctuation: 
+                    q.add(word)
+        
+        counts = 0
+        for word in text.lower().split(): 
+            word = word.strip(string.punctuation)
+            if word not in string.punctuation and word in q: 
+                counts+=1
+
+        return counts
 
     def retrieve(self, query, top_k=3):
         """
