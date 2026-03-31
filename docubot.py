@@ -9,6 +9,7 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import string
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -65,6 +66,11 @@ class DocuBot:
         """
         index = {}
         # TODO: implement simple indexing
+        for filename, text_body in documents: 
+            for word in text_body.lower().split(): 
+                if word not in string.punctuation: 
+                    index.setdefault(word, set()).add(filename)
+
         return index
 
     # -----------------------------------------------------------
@@ -143,3 +149,6 @@ class DocuBot:
         This is used in Phase 0 for naive 'generation only' baselines.
         """
         return "\n\n".join(text for _, text in self.documents)
+
+if __name__ == "__main__":
+    bot = DocuBot() 
