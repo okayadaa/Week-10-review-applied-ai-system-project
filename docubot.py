@@ -13,6 +13,8 @@ import string
 from typing import List, Tuple, Dict
 
 class DocuBot:
+    CONFIDENCE_THRESHOLD = 0.3  # Minimum query-coverage score for the best match
+
     def __init__(self, docs_folder="docs", llm_client=None):
         """
         docs_folder: directory containing project documentation files
@@ -114,29 +116,35 @@ class DocuBot:
     # Scoring and Retrieval (Phase 1)
     # -----------------------------------------------------------
 
-    def score_document(self, query: str, text: str) -> int:
-        """
-        TODO (Phase 1):
-        Return a simple relevance score for how well the text matches the query.
+    STOP_WORDS = {
+        "how", "to", "what", "is", "the", "a", "an", "do", "i", "can",
+        "where", "when", "why", "which", "does", "are", "in", "of",
+        "for", "on", "with", "it", "my", "and", "or", "be",
+    }
 
-        Suggested baseline:
-        - Convert query into lowercase words
-        - Count how many appear in the text
-        - Return the count as the score
+    def score_document(self, query: str, text: str) -> float:
         """
-        # TODO: implement scoring
-        q = set()
-        for word in query.lower().split(): 
-             if word not in string.punctuation: 
-                    q.add(word)
-        
-        counts = 0
-        for word in text.lower().split(): 
-            word = word.strip(string.punctuation)
-            if word not in string.punctuation and word in q: 
-                counts+=1
+        Returns a normalized relevance score in [0.0, 1.0].
+        Score = (unique content query words found in text) / (unique content query words in query)
+        Stop words are excluded from the query so common words like "how" and
+        "to" don't inflate the score when they appear frequently in the docs.
+        """
+        query_words = {
+            word.strip(string.punctuation)
+            for word in query.lower().split()
+            if word.strip(string.punctuation) and word.strip(string.punctuation) not in self.STOP_WORDS
+        }
+        if not query_words:
+            return 0.0
 
-        return counts
+        text_words = {
+            word.strip(string.punctuation)
+            for word in text.lower().split()
+            if word.strip(string.punctuation)
+        }
+
+        matches = query_words & text_words
+        return len(matches) / len(query_words)
 
     def retrieve(self, query, top_k=3):
         """
@@ -159,9 +167,15 @@ class DocuBot:
             score = self.score_document(query, section_text)
             scored.append((score, filename, section_title, section_text))
 
-        # Step 3: Sort by score descending, return top k (label, text) pairs
-        # Label includes section title so callers can see which section matched
+        # Step 3: Sort by score descending
         scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Step 4: All-or-nothing gate — if the best score is below the threshold,
+        # no snippet is confident enough to return an answer
+        if not scored or scored[0][0] < self.CONFIDENCE_THRESHOLD:
+            return []
+
+        # Label includes section title so callers can see which section matched
         return [
             (f"{filename}#{section_title}", section_text)
             for _, filename, section_title, section_text in scored
