@@ -80,3 +80,16 @@ You will primarily work in:
 - Python 3.9+
 - A Gemini API key for LLM features (only needed for modes 1 and 3)
 - No database, no server setup, no external services besides LLM calls
+
+
+## TF README
+
+Submit a short summary added to the README. The summary should be 5–7 sentences covering:
+1. The core concept students needed to understand
+2. Where students are most likely to struggle
+3. Where AI was helpful vs misleading
+4. One way they would guide a student without giving the answer
+
+Before student dive into the Tinker activity, they need to understand the basics of RAG, and that we are not implementing a traditional RAG. Students are likely to struggle when trying to bridge the build_index() and the retrieval() function. build_index() was a bit confusing, but the general idea is to map each word to its document. retrieval() is also a bit challenging as it requires using the function the student build without having an "internal" or "pre-established" map they can refer to. I did not encounter any misleading moments with AI, but Claude's code is not the most "reader" friendly, therefore almost half the time I was revising the functions to understand what's doing exactly. 
+
+I will guide student to ask Claude to given an UMP style map and how each of the class method connect among themselves. 
