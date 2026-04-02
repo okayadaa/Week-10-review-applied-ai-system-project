@@ -67,7 +67,7 @@ def evaluate_retrieval(bot, top_k=3):
         expected = expected_files_for_query(query)
         retrieved = bot.retrieve(query, top_k=top_k)
 
-        retrieved_files = [fname for fname, _ in retrieved]
+        retrieved_files = [fname.split("#")[0] for fname, _ in retrieved]
 
         hit = any(f in retrieved_files for f in expected) if expected else False
         if hit:

@@ -24,6 +24,16 @@ class DocuBot:
         # Load documents into memory
         self.documents = self.load_documents()  # List of (filename, text)
 
+        # Parse documents into sections: List of (filename, section_title, section_text)
+        self.sections = []
+        for filename, text in self.documents:
+            self.sections.extend(self.parse_sections(filename, text))
+
+        # Fast lookup: (filename, section_title) -> section_text
+        self.section_lookup = {
+            (fn, title): text for fn, title, text in self.sections
+        }
+
         # Build a retrieval index (implemented in Phase 1)
         self.index = self.build_index(self.documents)
 
@@ -46,6 +56,32 @@ class DocuBot:
                 docs.append((filename, text))
         return docs
 
+    def parse_sections(self, filename: str, text: str) -> List[Tuple]:
+        """
+        Splits a document into sections at each line starting with '#'.
+        Returns a list of (filename, section_title, section_text) tuples.
+        The header line is included in section_text so it contributes to scoring.
+        Falls back to the whole document as one section if no headers are found.
+        """
+        sections = []
+        current_title = None
+        current_lines = []
+
+        for line in text.splitlines():
+            if line.startswith("#"):
+                if current_lines:
+                    sections.append((filename, current_title, "\n".join(current_lines)))
+                current_title = line.strip()
+                current_lines = [line]
+            else:
+                current_lines.append(line)
+
+        if current_lines:
+            title = current_title if current_title else filename
+            sections.append((filename, title, "\n".join(current_lines)))
+
+        return sections
+
     # -----------------------------------------------------------
     # Index Construction (Phase 1)
     # -----------------------------------------------------------
@@ -66,12 +102,11 @@ class DocuBot:
         ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
-        for filename, text_body in documents: 
-            for word in text_body.lower().split(): 
+        for filename, section_title, section_text in self.sections:
+            for word in section_text.lower().split():
                 word = word.strip(string.punctuation)
-                if word not in string.punctuation: 
-                    index.setdefault(word, set()).add(filename)
+                if word not in string.punctuation:
+                    index.setdefault(word, set()).add((filename, section_title))
 
         return index
 
@@ -110,26 +145,27 @@ class DocuBot:
 
         Return a list of (filename, text) sorted by score descending.
         """
-        # Build a fast filename -> text lookup to avoid O(n) scans per candidate
-        doc_lookup = {filename: text for filename, text in self.documents}
-
-        # Step 1: Find candidate documents using the index
+        # Step 1: Find candidate (filename, section_title) pairs using the index
         candidates = set()
         for word in query.lower().split():
             word = word.strip(string.punctuation)
             if word in self.index:
                 candidates.update(self.index[word])
 
-        # Step 2: Score each candidate document
+        # Step 2: Score each candidate section
         scored = []
-        for filename in candidates:
-            text = doc_lookup[filename]
-            score = self.score_document(query, text)
-            scored.append((score, filename, text))
+        for filename, section_title in candidates:
+            section_text = self.section_lookup[(filename, section_title)]
+            score = self.score_document(query, section_text)
+            scored.append((score, filename, section_title, section_text))
 
-        # Step 3: Sort by score descending, return top k (filename, text) pairs
+        # Step 3: Sort by score descending, return top k (label, text) pairs
+        # Label includes section title so callers can see which section matched
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [(filename, text) for score, filename, text in scored][:top_k]
+        return [
+            (f"{filename}#{section_title}", section_text)
+            for _, filename, section_title, section_text in scored
+        ][:top_k]
 
     # -----------------------------------------------------------
     # Answering Modes
