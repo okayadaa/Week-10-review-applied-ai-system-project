@@ -167,471 +167,54 @@ For authenticating with SSH servers, often in deployment pipelines or for access
 **To determine the *exact* environment variables required for your specific use case, you should consult the official documentation of the service or library you are trying to authenticate with.**
 
 ============================================================
-Question: How do I connect to the database?
+Question: Where is the auth token generated?
 
-Answer:
-Connecting to a database involves a few common steps, but the exact details vary significantly based on **what kind of database you're using** (e.g., PostgreSQL, MySQL, MongoDB, SQLite) and **what programming language/tool you're using** to connect.
+Retrieved snippets:
+[AUTH.md### Token Generation]
+## Token Generation
 
-Let's break down the general process and then provide some common examples.
+Tokens are created by the `generate_access_token` function in the `auth_utils.py` module. The function takes a user ID and returns a signed JSON Web Token string.
 
----
+Internally, the token is signed using the secret stored in the `AUTH_SECRET_KEY` environment variable. If the key is missing or empty, token creation will fail.
 
-### General Prerequisites & Steps
+The token payload includes:
 
-Before you can connect, you'll generally need:
+- `user_id`
+- `issued_at`
+- `expires_at`
+- `permissions` (optional)
 
-1.  **Database Server Information:**
-    *   **Host/IP Address:** Where the database server is running (e.g., `localhost`, `127.0.0.1`, a cloud provider's URL).
-    *   **Port Number:** The specific port the database server is listening on (e.g., `5432` for PostgreSQL, `3306` for MySQL, `27017` for MongoDB).
-    *   **Database Name:** The specific database you want to connect to within the server.
-
-2.  **Database Credentials:**
-    *   **Username:** A valid user account on the database.
-    *   **Password:** The password for that user account.
-
-3.  **Network Access:**
-    *   Ensure your application's host can reach the database host. This often involves checking **firewall rules** on both your application server and the database server. For cloud databases, this means configuring security groups or network access rules.
-
-4.  **Database Driver/Library:**
-    *   You'll need a specific software library (often called a "driver" or "client library") for your chosen programming language that knows how to speak the protocol of your database.
 
 ---
+[AUTH.md### Validating Requests]
+## Validating Requests
 
-### Common Connection Examples
+Requests are validated by the `require_auth` decorator. This decorator ensures that:
 
-Here are examples for some popular databases and programming languages:
+1. A token is present in the Authorization header  
+2. The token signature is valid  
+3. The token has not expired  
+4. The user has permission to access the requested resource  
 
-#### 1. Relational Databases (SQL)
+If validation fails, the client receives a 401 Unauthorized response.
 
-**Key Concept:** You typically use a "connection string" or pass parameters to establish a connection.
-
----
-
-##### a) PostgreSQL (using Python `psycopg2` or `SQLAlchemy`)
-
-**Prerequisites:**
-```bash
-pip install psycopg2-binary
-# or for SQLAlchemy (an ORM/SQL toolkit)
-pip install SQLAlchemy psycopg2-binary
-```
-
-**Direct `psycopg2` Example:**
-```python
-import psycopg2
-from psycopg2 import Error
-import os
-
-# --- Connection Parameters (get from environment variables for production!) ---
-DB_HOST = os.environ.get("DB_HOST", "localhost")
-DB_NAME = os.environ.get("DB_NAME", "your_database_name")
-DB_USER = os.environ.get("DB_USER", "your_username")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "your_password")
-DB_PORT = os.environ.get("DB_PORT", "5432")
-
-connection = None
-cursor = None
-try:
-    connection = psycopg2.connect(
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME
-    )
-    cursor = connection.cursor()
-
-    # --- Example: Execute a query ---
-    print("Successfully connected to PostgreSQL database!")
-    cursor.execute("SELECT version();")
-    record = cursor.fetchone()
-    print("You are connected to:", record)
-
-except (Exception, Error) as error:
-    print(f"Error while connecting to PostgreSQL: {error}")
-finally:
-    if connection:
-        cursor.close()
-        connection.close()
-        print("PostgreSQL connection is closed.")
-```
 
 ---
+[AUTH.md### Client Workflow]
+## Client Workflow
 
-##### b) MySQL (using Node.js `mysql2`)
+A typical client follows this sequence:
 
-**Prerequisites:**
-```bash
-npm install mysql2
-```
+1. Send credentials to `/api/login`
+2. Receive an access token in the response
+3. Include the token in the Authorization header for all subsequent requests:
 
-**Node.js Example:**
-```javascript
-const mysql = require('mysql2');
-
-// --- Connection Parameters (get from environment variables for production!) ---
-const DB_HOST = process.env.DB_HOST || 'localhost';
-const DB_USER = process.env.DB_USER || 'your_username';
-const DB_PASSWORD = process.env.DB_PASSWORD || 'your_password';
-const DB_NAME = process.env.DB_NAME || 'your_database_name';
-const DB_PORT = process.env.DB_PORT || 3306;
-
-// Create the connection pool (recommended for web applications)
-const pool = mysql.createPool({
-  host: DB_HOST,
-  user: DB_USER,
-  password: DB_PASSWORD,
-  database: DB_NAME,
-  port: DB_PORT,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-
-// Get a connection from the pool and test it
-pool.getConnection((err, connection) => {
-  if (err) {
-    console.error('Error connecting to MySQL database:', err);
-    return;
-  }
-  console.log('Successfully connected to MySQL database!');
-
-  // --- Example: Execute a query ---
-  connection.query('SELECT VERSION() AS mysql_version', (queryErr, results) => {
-    if (queryErr) {
-      console.error('Error executing query:', queryErr);
-    } else {
-      console.log('MySQL Version:', results[0].mysql_version);
-    }
-    connection.release(); // Release the connection back to the pool
-    console.log('MySQL connection released.');
-  });
-});
-```
-
----
-
-##### c) SQLite (using Python `sqlite3`)
-
-SQLite is unique as it's a file-based database, so you just provide the path to the database file.
-
-**Python Example:**
-```python
-import sqlite3
-from sqlite3 import Error
-
-DB_FILE = "mydatabase.db" # This will create the file if it doesn't exist
-
-connection = None
-try:
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    print(f"Successfully connected to SQLite database: {DB_FILE}")
-
-    # --- Example: Create a table and insert data ---
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE
-        );
-    ''')
-    connection.commit()
-    print("Table 'users' checked/created.")
-
-    cursor.execute("INSERT OR IGNORE INTO users (name, email) VALUES (?, ?);", ("Alice", "alice@example.com"))
-    connection.commit()
-    print("Inserted 'Alice' (or ignored if already exists).")
-
-    cursor.execute("SELECT * FROM users;")
-    rows = cursor.fetchall()
-    print("Users in database:", rows)
-
-except Error as e:
-    print(f"Error connecting to SQLite: {e}")
-finally:
-    if connection:
-        connection.close()
-        print("SQLite connection is closed.")
-```
-
----
-
-#### 2. NoSQL Databases
-
----
-
-##### a) MongoDB (using Python `pymongo`)
-
-**Key Concept:** Uses a "connection URI" or separate parameters.
-
-**Prerequisites:**
-```bash
-pip install pymongo
-```
-
-**Python Example:**
-```python
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, OperationFailure
-import os
-
-# --- Connection Parameters (get from environment variables for production!) ---
-# A common MongoDB URI looks like: mongodb://username:password@host:port/database_name
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/") # Include database name at the end if you want
-# Or separate parameters:
-MONGO_HOST = os.environ.get("MONGO_HOST", "localhost")
-MONGO_PORT = int(os.environ.get("MONGO_PORT", 27017))
-MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "your_mongodb_name")
-MONGO_USER = os.environ.get("MONGO_USER", None) # Optional, if auth is enabled
-MONGO_PASSWORD = os.environ.get("MONGO_PASSWORD", None) # Optional
-
-client = None
-try:
-    # Option 1: Using a full URI (recommended)
-    client = MongoClient(MONGO_URI)
-
-    # Option 2: Using separate parameters (useful for more complex auth/SSL)
-    # client = MongoClient(
-    #     host=MONGO_HOST,
-    #     port=MONGO_PORT,
-    #     username=MONGO_USER,
-    #     password=MONGO_PASSWORD
-    # )
-
-    # The ping command is cheap and does not require auth.
-    client.admin.command('ping')
-    print("Successfully connected to MongoDB!")
-
-    # --- Example: Interact with a database and collection ---
-    db = client[MONGO_DB_NAME] # Access the specific database
-    collection = db["mycollection"]
-
-    # Insert a document
-    result = collection.insert_one({"name": "Test Document", "value": 123})
-    print(f"Inserted document with ID: {result.inserted_id}")
-
-    # Find documents
-    found_doc = collection.find_one({"name": "Test Document"})
-    print(f"Found document: {found_doc}")
-
-except ConnectionFailure as e:
-    print(f"MongoDB connection failed: {e}")
-except OperationFailure as e:
-    print(f"MongoDB operation failed (authentication?): {e}")
-except Exception as e:
-    print(f"An unexpected error occurred: {e}")
-finally:
-    if client:
-        client.close()
-        print("MongoDB connection is closed.")
-```
-
----
-
-### Important Considerations & Best Practices
-
-1.  **Environment Variables:** **NEVER hardcode credentials in your code.** Always load them from environment variables (e.g., `.env` file in development, system environment variables in production).
-2.  **Connection Pooling:** For web applications or services that frequently connect to the database, use a **connection pool**. This reuses established connections, significantly improving performance and resource management.
-3.  **Error Handling:** Implement robust `try-except`/`try-catch` blocks to gracefully handle connection failures, network issues, or invalid credentials.
-4.  **Security (SSL/TLS):** Always encrypt your database connections using SSL/TLS, especially when connecting over a network (e.g., to a cloud database). Drivers usually have options for this (e.g., `ssl=True`, `tls=true`).
-5.  **Firewall Rules:** Ensure your database server's firewall (or cloud security groups) allows incoming connections from your application's IP address or subnet on the correct port.
-6.  **User Permissions:** Create dedicated database users for your application with only the necessary privileges (least privilege principle). Don't use the root or admin user for application connections.
-7.  **ORMs/ODMs:** For complex applications, consider using an Object-Relational Mapper (ORM) like SQLAlchemy (Python), Hibernate (Java), or Mongoose (Node.js/MongoDB). ORMs abstract away much of the raw SQL/database interaction and connection management.
-8.  **Cloud-Specific Authentication:** If using cloud databases (AWS RDS, Azure SQL Database, GCP Cloud SQL, MongoDB Atlas), they often have specific IAM roles, managed identities, or other secure authentication methods that you should leverage instead of traditional usernames/passwords for enhanced security.
-
----
-
-**To give you the most accurate answer, please tell me:**
-
-*   **What type of database are you trying to connect to?** (e.g., PostgreSQL, MySQL, SQL Server, MongoDB, Cassandra, Redis)
-*   **What programming language or tool are you using?** (e.g., Python, Node.js, Java, PHP, Go, Ruby, a command-line tool like `psql` or `mysql`)
-*   **Where is your database hosted?** (e.g., locally on your machine, a dedicated server, AWS, Azure, Google Cloud, a managed service like Heroku Postgres)
-
-============================================================
-Question: Which endpoint lists all users?
-
-Answer:
-Generally, in a RESTful API, the endpoint to list all users would be:
-
-```
-GET /users
-```
-
-**Key considerations and common variations:**
-
-1.  **HTTP Method:** It's almost always a `GET` request, as you are retrieving data.
-2.  **Resource Naming:** The path typically uses the plural form of the resource (e.g., `/users`, `/products`, `/orders`).
-3.  **Base Path / API Versioning:**
-    *   Often, APIs include a base path and a version number:
-        ```
-        GET /api/v1/users
-        ```
-        or
-        ```
-        GET /api/users
-        ```
-4.  **Pagination:** For APIs that might have many users, this endpoint will almost certainly be paginated to prevent overwhelming the client or server. You'd typically use query parameters like:
-    ```
-    GET /users?page=1&limit=20
-    GET /users?offset=0&limit=50
-    ```
-5.  **Authentication & Authorization:** This endpoint would usually require authentication (e.g., an API key, OAuth token) and appropriate authorization to ensure the caller has permission to view the list of users.
-6.  **Filtering & Sorting:** You might also be able to filter or sort the list using query parameters:
-    ```
-    GET /users?status=active&sort_by=created_at&order=desc
-    ```
-7.  **Response Format:** The response will typically be a JSON array of user objects:
-    ```json
-    [
-      {
-        "id": "user123",
-        "username": "johndoe",
-        "email": "john.doe@example.com",
-        "status": "active",
-        // ... other user details
-      },
-      {
-        "id": "user456",
-        "username": "janesmith",
-        "email": "jane.smith@example.com",
-        "status": "active",
-        // ... other user details
-      }
-    ]
+    ```plaintext
+    Authorization: Bearer <token>
     ```
 
-**To give you a precise answer, I would need to know which specific API or service you are referring to.**
+4. Refresh the token when it expires by calling `/api/refresh`
 
-============================================================
-Question: What does the /api/projects/<project_id> route return?
-
-Answer:
-The `/api/projects/<project_id>` route is designed to **retrieve the details of a single, specific project**.
-
-Here's a breakdown of what it typically returns:
-
----
-
-### HTTP Method: `GET`
-
-This route primarily responds to `GET` requests, as its purpose is to fetch data.
-
-### Path Parameter: `<project_id>`
-
-*   `project_id` is a **path parameter** (or URL parameter). It's a placeholder that you replace with the unique identifier of the project you want to retrieve.
-*   Examples: `/api/projects/123`, `/api/projects/my-awesome-project-slug`, `/api/projects/a1b2c3d4-e5f6-7890-1234-567890abcdef`.
-
----
-
-### Expected Responses
-
-#### 1. Success Response: `200 OK`
-
-If the project with the given `project_id` is found and the request is authorized, the API will return a `200 OK` status code along with a JSON (most commonly) or XML object containing the project's data.
-
-**Typical JSON Structure:**
-
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef", // The unique ID of the project
-  "name": "Website Redesign Phase 2",
-  "description": "Refactoring frontend and backend for improved performance and scalability.",
-  "status": "In Progress",
-  "startDate": "2023-01-15T00:00:00Z",
-  "endDate": "2023-06-30T23:59:59Z",
-  "budget": {
-    "currency": "USD",
-    "amount": 75000.00
-  },
-  "teamLead": {
-    "id": "user-g7h8i9j0",
-    "name": "Alice Johnson",
-    "email": "alice@example.com"
-  },
-  "tasksCount": 15,
-  "completionPercentage": 65,
-  "tags": ["web development", "design", "backend", "frontend"],
-  "attachments": [
-    {
-      "id": "attachment-1",
-      "filename": "project-plan.pdf",
-      "url": "https://api.example.com/files/attachment-1"
-    }
-  ],
-  "createdAt": "2023-01-01T10:30:00Z",
-  "updatedAt": "2023-04-20T14:15:00Z",
-  "links": [
-    { "rel": "self", "href": "/api/projects/a1b2c3d4-e5f6-7890-1234-567890abcdef" },
-    { "rel": "tasks", "href": "/api/projects/a1b2c3d4-e5f6-7890-1234-567890abcdef/tasks" },
-    { "rel": "team-members", "href": "/api/projects/a1b2c3d4-e5f6-7890-1234-567890abcdef/team-members" }
-  ]
-}
-```
-
-**Common Fields you might find:**
-
-*   `id`: The unique identifier for the project.
-*   `name`: A human-readable name.
-*   `description`: A more detailed explanation.
-*   `status`: (e.g., "Pending", "In Progress", "Completed", "On Hold", "Archived").
-*   `startDate`, `endDate`: Timestamps or dates for the project's duration.
-*   `budget`, `cost`: Financial details.
-*   `teamLead`, `createdBy`: References to user objects.
-*   `completionPercentage`, `progress`: Numerical indicators of project progress.
-*   `tags`, `categories`: Keywords or classifications.
-*   `attachments`: Links or details of associated files.
-*   `createdAt`, `updatedAt`: Timestamps for creation and last modification.
-*   `links`: (Hypermedia) URLs to related resources (e.g., tasks, team members associated with this project).
-
-#### 2. Error Responses
-
-*   **`404 Not Found`**:
-    *   **Reason:** The `project_id` provided in the URL does not correspond to any existing project.
-    *   **Example Response:**
-        ```json
-        {
-          "status": 404,
-          "error": "Not Found",
-          "message": "Project with ID 'non-existent-id' not found."
-        }
-        ```
-*   **`401 Unauthorized`**:
-    *   **Reason:** The request lacks valid authentication credentials (e.g., missing API key, invalid token).
-    *   **Example Response:**
-        ```json
-        {
-          "status": 401,
-          "error": "Unauthorized",
-          "message": "Authentication required or invalid credentials."
-        }
-        ```
-*   **`403 Forbidden`**:
-    *   **Reason:** The user is authenticated but does not have the necessary permissions to access this specific project.
-    *   **Example Response:**
-        ```json
-        {
-          "status": 403,
-          "error": "Forbidden",
-          "message": "You do not have permission to access this project."
-        }
-        ```
-*   **`500 Internal Server Error`**:
-    *   **Reason:** An unexpected error occurred on the server-side.
-
----
-
-### Key Considerations
-
-*   **Authentication & Authorization:** Access to this route almost certainly requires authentication. The specific details returned might also vary based on the user's roles and permissions.
-*   **Data Structure Consistency:** The exact fields and their types will be defined by the API's schema.
-*   **Related Resources:** The response might embed some related data (like a `teamLead` object) or provide `links` to other API endpoints for fetching related resources (like a list of tasks for the project).
-*   **API Versioning:** The exact structure might change between API versions (e.g., `/v1/api/projects/<project_id>`).
-
----
-
-In summary, this route is the primary way to fetch all the relevant information about a single project identified by its unique ID.
+Clients should never store tokens in URL query parameters.
 
 
-
-### AFTER (PHASE 2)
