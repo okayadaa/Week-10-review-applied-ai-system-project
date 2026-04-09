@@ -1,95 +1,180 @@
-# DocuBot
+# KeRAG: All Local Keras API Docs RAG-MCP Server
 
-DocuBot is a small documentation assistant that helps answer developer questions about a codebase.  
-It can operate in three different modes:
-
-1. **Naive LLM mode**  
-   Sends the entire documentation corpus to a Gemini model and asks it to answer the question.
-
-2. **Retrieval only mode**  
-   Uses a simple indexing and scoring system to retrieve relevant snippets without calling an LLM.
-
-3. **RAG mode (Retrieval Augmented Generation)**  
-   Retrieves relevant snippets, then asks Gemini to answer using only those snippets.
-
-The docs folder contains realistic developer documents (API reference, authentication notes, database notes), but these files are **just text**. They support retrieval experiments and do not require students to set up any backend systems.
+## What Are We Building?
+A **local RAG (Retrieval-Augmented Generation)** system built on the **Keras online API docs**. It scrapes the docs from the web, cleans them up, stores them in a local vector database, and lets you ask natural language questions about Keras — grounded in the actual documentation.
 
 ---
 
-## Setup
+## The Full RAG Flow
 
-### 1. Install Python dependencies
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                     PREPROCESSING PHASE                          ║
+║                   (run once to build the DB)                     ║
+╚══════════════════════════════════════════════════════════════════╝
 
-    pip install -r requirements.txt
+  🌐 keras.io/api/ (live website)
+          │
+          │  scrape.py — wget mirror
+          ▼
+  📁 data/keras_docs/  (raw .html files on disk)
+          │
+          │  extract.py — trafilatura
+          │  strips nav, footer, boilerplate
+          ▼
+  📄 data/extracted/   (one clean .json per page)
+          │
+          │  preprocess.py — chunk + deduplicate
+          │  split at markdown headers (one chunk per function/class)
+          │  drop index-page summaries that duplicate detail pages
+          ▼
+  📋 data/chunks.jsonl  (final clean chunks, ready to embed)
+          │
+          │  ingest.py — gemini-embedding-001
+          │  task_type = RETRIEVAL_DOCUMENT
+          ▼
+  🗄️  ChromaDB  (saved to disk at ./chroma_db)
 
-### 2. Configure environment variables
 
-Copy the example file:
+╔══════════════════════════════════════════════════════════════════╗
+║                          QUERY PHASE                             ║
+║                    (runs on every question)                      ║
+╚══════════════════════════════════════════════════════════════════╝
 
-    cp .env.example .env
-
-Then edit `.env` to include your Gemini API key:
-
-    GEMINI_API_KEY=your_api_key_here
-
-If you do not set a Gemini key, you can still run retrieval only mode.
-
----
-
-## Running DocuBot
-
-Start the program:
-
-    python main.py
-
-Choose a mode:
-
-- **1**: Naive LLM (Gemini reads the full docs)  
-- **2**: Retrieval only (no LLM)  
-- **3**: RAG (retrieval + Gemini)
-
-You can use built in sample queries or type your own.
-
----
-
-## Running Retrieval Evaluation (optional)
-
-    python evaluation.py
-
-This prints simple retrieval hit rates for sample queries.
-
----
-
-## Modifying the Project
-
-You will primarily work in:
-
-- `docubot.py`  
-  Implement or improve the retrieval index, scoring, and snippet selection.
-
-- `llm_client.py`  
-  Adjust the prompts and behavior of LLM responses.
-
-- `dataset.py`  
-  Add or change sample queries for testing.
+  💬 User's Question
+          │
+          │  gemini-embedding-001
+          │  task_type = RETRIEVAL_QUERY
+          ▼
+  🔢 Question Vector
+          │
+          │  ChromaDB similarity search
+          ▼
+  📑 Top 5 Most Relevant Chunks  (with URL + section citations)
+          │
+          │  Stuffed into a prompt
+          ▼
+  🤖 Gemini 2.5 Flash
+          │
+          ▼
+  💡 Answer  (grounded in the Keras docs)
+```
 
 ---
 
-## Requirements
+## Tech Stack
 
-- Python 3.9+
-- A Gemini API key for LLM features (only needed for modes 1 and 3)
-- No database, no server setup, no external services besides LLM calls
+| What | Tool | Why |
+|---|---|---|
+| Chat / generation | Gemini 2.5 Flash | Free tier, fast, smart |
+| Embedding | `gemini-embedding-001` | Same API key, free tier (1000 req/day) |
+| Vector database | ChromaDB | Runs locally, no setup needed |
+| Web scraping | `wget` (system tool) | Reliable recursive mirror of static sites |
+| HTML cleaning | `trafilatura` | Purpose-built for extracting article content from HTML |
+| Chunking | Header-based + LangChain fallback | Respects API doc structure |
+| Secrets | `python-dotenv` | Keeps your API key out of your code |
 
+### One-line install
+```bash
+pip install google-genai chromadb langchain langchain-google-genai langchain-community trafilatura python-dotenv
+```
+`wget` is a system tool — on macOS: `brew install wget`. On Linux it's usually pre-installed.
 
-## TF README
+---
 
-Submit a short summary added to the README. The summary should be 5–7 sentences covering:
-1. The core concept students needed to understand
-2. Where students are most likely to struggle
-3. Where AI was helpful vs misleading
-4. One way they would guide a student without giving the answer
+## Project File Layout
 
-Before student dive into the Tinker activity, they need to understand the basics of RAG, and that we are not implementing a traditional RAG. Students are likely to struggle when trying to bridge the build_index() and the retrieval() function. build_index() was a bit confusing, but the general idea is to map each word to its document. retrieval() is also a bit challenging as it requires using the function the student build without having an "internal" or "pre-established" map they can refer to. I did not encounter any misleading moments with AI, but Claude's code is not the most "reader" friendly, therefore almost half the time I was revising the functions to understand what's doing exactly. 
+```
+rag_project/
+├── .env              ← Your API key goes here (never commit this!)
+├── config.py         ← All settings in one place
+├── scrape.py         ← Step 1: wget mirror of keras.io/api
+├── extract.py        ← Step 2: HTML → clean JSON via trafilatura
+├── preprocess.py     ← Step 3: chunk + deduplicate → chunks.jsonl
+├── ingest.py         ← Step 4: embed chunks + store in ChromaDB
+├── retriever.py      ← Embed question → search ChromaDB
+├── generator.py      ← Build prompt → call Gemini → return answer
+├── main.py           ← The thing you actually run
+└── data/
+    ├── keras_docs/   ← Raw HTML from wget
+    ├── extracted/    ← Cleaned JSON, one file per page
+    └── chunks.jsonl  ← Final chunks ready for embedding
+```
 
-I will guide student to ask Claude to given an UMP style map and how each of the class method connect among themselves. 
+---
+
+## Key Settings (config.py)
+
+| Setting | Value | What it means |
+|---|---|---|
+| `CHUNK_SIZE` | 800 chars | Each piece of text stored in the DB |
+| `CHUNK_OVERLAP` | 100 chars | How much adjacent chunks share (prevents cutting a sentence in half at a boundary) |
+| `TOP_K` | 5 | How many chunks to retrieve per question |
+| `EMBEDDING_MODEL` | `gemini-embedding-001` | Converts text → numbers |
+| `GENERATIVE_MODEL` | `gemini-2.5-flash` | Writes the final answer |
+
+---
+
+## What Gets Stored Per Chunk
+
+Every chunk in ChromaDB has a **vector** (for search) and **metadata** (for context):
+
+| Field | Example | Purpose |
+|---|---|---|
+| `text` | *"Dense layer — applies transformation..."* | Passed to Gemini as context |
+| `url` | `keras.io/api/layers/core/dense` | Shown as a citation link |
+| `title` | `Dense layer` | Human-readable page name |
+| `section` | `## call() method` | Which part of the page this came from |
+| `chunk_index` | `2` | Which piece of this page |
+
+---
+
+## How to Use It (Once Built)
+
+```bash
+# Step 1: Run the full preprocessing + ingestion pipeline
+python main.py --all
+
+# Or run steps individually if something fails
+python main.py --scrape       # download keras docs (~once ever)
+python main.py --extract      # clean HTML → JSON
+python main.py --preprocess   # chunk + deduplicate
+python main.py --ingest       # embed + load into ChromaDB
+
+# Step 2: Ask questions
+python main.py
+> What arguments does the Dense layer accept?
+> How does Dropout behave differently during training vs inference?
+```
+
+---
+
+## Important Notes
+
+**Why header-based chunking (not character splitting) for API docs:**
+API documentation is already logically structured — each function or class is a natural unit. Splitting at `##` headers keeps each chunk self-contained (signature + description together), which leads to much more precise retrieval than arbitrary character-count splits would.
+
+**Why deduplication matters:**
+The Keras docs have index pages (e.g. `keras.io/api/layers/`) that list and summarize every layer. Each layer also has its own detail page. Without deduplication, you'd end up with two near-identical chunks for every item — the index summary and the full detail. This dilutes retrieval and wastes your embedding quota.
+
+**Two different task types for embeddings:**
+When embedding document chunks you use `RETRIEVAL_DOCUMENT`, and when embedding a user's question you use `RETRIEVAL_QUERY`. This is intentional — it tells the model what role the text plays and meaningfully improves retrieval accuracy.
+
+**The AI only answers from the docs:**
+The prompt instructs Gemini to answer *only* from the retrieved context. If the answer isn't in the Keras docs, it will say so rather than guessing.
+
+**Free tier limits:**
+The Gemini free tier allows 1,000 embedding requests/day. The full Keras API docs will likely produce several thousand chunks — run `--ingest` over a couple of days if needed, or batch carefully.
+
+ wget \
+  --mirror \
+  --convert-links \
+  --adjust-extension \
+  --no-parent \
+  --wait=1 \
+  --random-wait \
+  --no-clobber \
+  -e robots=off \
+  --directory-prefix=./keras_docs \
+  https://keras.io/api/
+
