@@ -165,16 +165,3 @@ The prompt instructs Gemini to answer *only* from the retrieved context. If the 
 
 **Free tier limits:**
 The Gemini free tier allows 1,000 embedding requests/day. The full Keras API docs will likely produce several thousand chunks — run `--ingest` over a couple of days if needed, or batch carefully.
-
- wget \
-  --mirror \
-  --convert-links \
-  --adjust-extension \
-  --no-parent \
-  --wait=1 \
-  --random-wait \
-  --no-clobber \
-  -e robots=off \
-  --directory-prefix=./keras_docs \
-  https://keras.io/api/
-
