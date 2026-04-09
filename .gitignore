@@ -27,5 +27,5 @@ venv/
 *.log
 
 # Jun 
-docs/
-temp/
+data/
+archive/
