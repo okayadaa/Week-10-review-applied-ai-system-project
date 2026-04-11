@@ -6,3 +6,4 @@ langchain-google-genai
 langchain-community 
 pypdf 
 trafilatura
+lxml_html_clean # trafilatura needs this
