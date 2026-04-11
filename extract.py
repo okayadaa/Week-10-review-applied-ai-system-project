@@ -10,6 +10,8 @@ import trafilatura
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
+# Global Variables
 INPUT_DIR = Path("data/keras_docs")
 OUTPUT_DIR = Path("data/extracted")
 
