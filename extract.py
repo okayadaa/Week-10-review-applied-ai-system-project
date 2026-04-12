@@ -19,21 +19,20 @@ OUTPUT_DIR = Path("data/extracted")
 def extract_page(html_path: Path) -> dict | None:
     html = html_path.read_text(encoding="utf-8", errors="replace")
 
-    # JSON output lets us retrieve title and body text in one pass rather than parsing the HTML a second time for the <title> tag.
-    raw = trafilatura.extract(
+    metadata = trafilatura.extract_metadata(html)
+    title = metadata.title if (metadata and metadata.title) else ""
+
+    content = trafilatura.extract(
         html,
-        output_format="json",
+        output_format="markdown",
         include_formatting=True,  # preserves headers and code blocks for downstream chunking
         include_tables=True,
     )
 
     # trafilatura returns None for pages that are navigation-only or redirects there is no meaningful content to embed, so we drop them early.
-    if raw is None:
+    if content is None:
         return None
-
-    parsed = json.loads(raw)
-    content = parsed.get("text") or ""
-    title = parsed.get("title") or ""
+    content = content.strip()
 
     # A non-None result with empty text can happen on near-empty pages (e.g. pure JavaScript entry points). Guard here so we don't write empty JSON files.
     if not content:
