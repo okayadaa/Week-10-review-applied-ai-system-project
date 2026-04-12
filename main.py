@@ -12,7 +12,7 @@ load_dotenv()
 
 from docubot import DocuBot
 from llm_client import GeminiClient
-from dataset import SAMPLE_QUERIES
+from archive.dataset import SAMPLE_QUERIES
 
 
 def try_create_llm_client():
