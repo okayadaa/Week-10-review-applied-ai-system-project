@@ -1,107 +1,112 @@
 """
-Gemini client wrapper used by DocuBot.
+generator.py — Prompt construction and Gemini generation.
 
-Handles:
-- Configuring the Gemini client from the GEMINI_API_KEY environment variable
-- Naive "generation only" answers over the full docs corpus (Phase 0)
-- RAG style answers that use only retrieved snippets (Phase 2)
+Two public functions:
+    naive_generate(client, query)        → direct LLM answer, no retrieval
+    rag_generate(client, query, chunks)  → answer grounded in retrieved chunks
 
+The caller (kerag_cli.py) creates one genai.Client() and passes it here,
+the same instance used by retriever.py for query embeddings.
 """
 
-import os
-import google.generativeai as genai
+import logging
+from typing import Any
 
-# Central place to update the model name if needed.
-# You can swap this for a different Gemini model in the future.
+from google import genai
+
 from config import GENERATIVE_MODEL
 
+log = logging.getLogger(__name__)
 
-class GeminiClient:
-    """
-    Simple wrapper around the Gemini model.
+# ---------------------------------------------------------------------------
+# Prompt templates
+# ---------------------------------------------------------------------------
 
-    Usage:
-        client = GeminiClient()
-        answer = client.naive_answer_over_full_docs(query, all_text)
-        # or
-        answer = client.answer_from_snippets(query, snippets)
-    """
+_NAIVE_PROMPT = """\
+You are a helpful Keras documentation assistant.
+Answer the following question as clearly and concisely as possible.
 
-    def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "Missing GEMINI_API_KEY environment variable. "
-                "Set it in your shell or .env file to enable LLM features."
-            )
+Question: {query}
 
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(GENERATIVE_MODEL)
-
-    # -----------------------------------------------------------
-    # Phase 0: naive generation over full docs
-    # -----------------------------------------------------------
-
-    def naive_answer_over_full_docs(self, query, all_text):
-        # We ignore all_text and send a generic prompt instead
-        prompt = f"""
-    You are a documentation assistant. 
-    Answer this developer question: {query}
-    """
-        response = self.model.generate_content(prompt)
-        return (response.text or "").strip()
-
-    # -----------------------------------------------------------
-    # Phase 2: RAG style generation over retrieved snippets
-    # -----------------------------------------------------------
-
-    def answer_from_snippets(self, query, snippets):
-        """
-        Phase 2:
-        Generate an answer using only the retrieved snippets.
-
-        snippets: list of (filename, text) tuples selected by DocuBot.retrieve
-
-        The prompt:
-        - Shows each snippet with its filename
-        - Instructs the model to rely only on these snippets
-        - Requires an explicit "I do not know" refusal when needed
-        """
-
-        if not snippets:
-            return "I do not know based on the docs I have."
-
-        context_blocks = []
-        for filename, text in snippets:
-            block = f"File: {filename}\n{text}\n"
-            context_blocks.append(block)
-
-        context = "\n\n".join(context_blocks)
-
-        prompt = f"""
-You are a cautious documentation assistant helping developers understand a codebase.
-
-You will receive:
-- A developer question
-- A small set of snippets from project files
-
-Your job:
-- Answer the question using only the information in the snippets.
-- If the snippets do not provide enough evidence, refuse to guess.
-
-Snippets:
-{context}
-
-Developer question:
-{query}
-
-Rules:
-- Use only the information in the snippets. Do not invent new functions,
-  endpoints, or configuration values.
-- If the snippets are not enough to answer confidently, reply exactly:
-  "I do not know based on the docs I have."
-- When you do answer, briefly mention which files you relied on.
+Answer:\
 """
 
-        response = self.model.generate_content(prompt)
+_RAG_PROMPT = """\
+You are a helpful Keras documentation assistant. Answer the user's question \
+using ONLY the context provided below. If the answer is not contained in the \
+context, say "I don't have enough information to answer that."
+
+Context:
+{context}
+
+Question: {query}
+
+Answer:\
+"""
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def naive_generate(client: genai.Client, query: str) -> str:
+    """Call Gemini directly with no retrieval context.
+
+    Args:
+        client: An authenticated google.genai.Client instance.
+        query:  The user's natural-language question.
+
+    Returns:
+        The model's answer as a string, or an error message on failure.
+    """
+    prompt = _NAIVE_PROMPT.format(query=query)
+    try:
+        response = client.models.generate_content(
+            model=GENERATIVE_MODEL,
+            contents=prompt,
+        )
         return (response.text or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Naive generation failed: %s", exc)
+        return "Error: generation failed. Check your GOOGLE_API_KEY and quota."
+
+
+def rag_generate(
+    client: genai.Client,
+    query: str,
+    chunks: list[dict[str, Any]],
+) -> str:
+    """Generate an answer grounded in retrieved ChromaDB chunks.
+
+    Each chunk dict is expected to have the keys returned by retriever.retrieve():
+        text, source, section, chunk_index, distance
+
+    Args:
+        client: An authenticated google.genai.Client instance.
+        query:  The user's natural-language question.
+        chunks: Retrieved context chunks from retriever.retrieve().
+
+    Returns:
+        The model's grounded answer as a string, or an error message on failure.
+    """
+    if not chunks:
+        return "I don't have enough information to answer that."
+
+    context_parts = []
+    for i, chunk in enumerate(chunks, start=1):
+        context_parts.append(
+            f"[{i}] Source: {chunk['source']} | Section: {chunk['section']}\n"
+            f"{chunk['text']}"
+        )
+    context = "\n\n".join(context_parts)
+
+    prompt = _RAG_PROMPT.format(context=context, query=query)
+    try:
+        response = client.models.generate_content(
+            model=GENERATIVE_MODEL,
+            contents=prompt,
+        )
+        return (response.text or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        log.error("RAG generation failed: %s", exc)
+        return "Error: generation failed. Check your GOOGLE_API_KEY and quota."
