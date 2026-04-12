@@ -6,10 +6,6 @@ Handles:
 - Naive "generation only" answers over the full docs corpus (Phase 0)
 - RAG style answers that use only retrieved snippets (Phase 2)
 
-Experiment with:
-- Prompt wording
-- Refusal conditions
-- How strictly the model is instructed to use only the provided context
 """
 
 import os
@@ -17,7 +13,7 @@ import google.generativeai as genai
 
 # Central place to update the model name if needed.
 # You can swap this for a different Gemini model in the future.
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+from config import GENERATIVE_MODEL
 
 
 class GeminiClient:
@@ -40,7 +36,7 @@ class GeminiClient:
             )
 
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        self.model = genai.GenerativeModel(GENERATIVE_MODEL)
 
     # -----------------------------------------------------------
     # Phase 0: naive generation over full docs
