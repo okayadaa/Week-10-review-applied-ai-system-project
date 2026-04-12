@@ -9,72 +9,120 @@ CLI: python preprocess.py
 """
 
 # Internal
+import re
 import json
 import logging
-from typing import List
 from pathlib import Path
 
 # External
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Global Variables
 EXTRACTED_DIR = Path("data/extracted")
 OUTPUT_PATH = Path("data/chunks.jsonl")
-CHUNK_SIZE = 1000       # max characters per chunk passed to the embedding model
-CHUNK_OVERLAP = 100    # characters shared between adjacent chunks to avoid cutting mid-sentence
-DEDUP_THRESHOLD = 0.85 # fraction of index-chunk tokens that must appear in a detail chunk to trigger a drop
+CHUNK_SIZE = 1000  # max characters per chunk passed to the embedding model
+CHUNK_OVERLAP = (
+    100  # characters shared between adjacent chunks to avoid cutting mid-sentence
+)
+DEDUP_THRESHOLD = 0.85  # fraction of index-chunk tokens that must appear in a detail chunk to trigger a drop
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# Instantiate once — these are stateless and safe to reuse across pages
-_header_splitter = MarkdownHeaderTextSplitter(
-    headers_to_split_on=[("##", "h2"), ("###", "h3")],
-    strip_headers=False,  # keep the header text inside the chunk so the section label is searchable
-)
+_BOLD_HEADER_RE = re.compile(r"^\*\*(.+?)\*\*\s*$", re.MULTILINE)
+
+
+# Instantiate once — stateless and safe to reuse across pages
 _char_splitter = RecursiveCharacterTextSplitter(
     chunk_size=CHUNK_SIZE,
     chunk_overlap=CHUNK_OVERLAP,
 )
 
 
+def _split_on_bold_headers(content: str) -> list[tuple[str, str]]:
+    """
+    Split markdown content on lines that are exclusively a bold label, e.g.:
+        **Arguments**
+        **Call arguments**
+
+    Returns a list of (section_label, text) tuples.
+    The first tuple has section_label="" for content before the first header.
+
+
+    last_end = 0          # cursor: how far into `content` we've consumed
+    current_section = ""  # label for the *current* section being accumulated
+
+    FOR each line that matches "**SomeLabel**" in content:
+
+        # Everything between the previous match-end and this match-start
+        # is the body text of the *current* section
+        chunk_text = content[last_end : match.start()].strip()
+
+        IF chunk_text is non-empty:
+            SAVE (current_section, chunk_text)   # e.g. ("", "intro text...")
+
+        # The matched line IS the new section label — extract just the inner text
+        current_section = inner text of **...**  # e.g. "Arguments"
+
+        # Advance cursor past the matched **label** line
+        last_end = match.end()
+
+    # After the loop: anything remaining after the last **label** line
+    tail = content[last_end:].strip()
+    IF tail is non-empty:
+    SAVE (current_section, tail)             # e.g. ("Returns", "A tensor of...")
+
+    """
+    sections = []
+    last_end = 0
+    current_section = ""
+
+    for match in _BOLD_HEADER_RE.finditer(content):
+        chunk_text = content[last_end : match.start()].strip()
+        if chunk_text:
+            sections.append((current_section, chunk_text))
+        current_section = match.group(1).strip()
+        last_end = match.end()
+
+    # Remainder after the last header
+    tail = content[last_end:].strip()
+    if tail:
+        sections.append((current_section, tail))
+
+    return sections
+
+
 def chunk_page(doc: dict) -> list[dict]:
     """
     Split one extracted page into chunks.
 
-    Primary split: markdown ## / ### headers — one chunk per logical section
-    (function signature + description stay together).
+    Primary split: bold-marker headers (**Section**) — one chunk per logical section.
     Fallback: RecursiveCharacterTextSplitter for any section still over CHUNK_SIZE.
     """
     url = doc["url"]
     title = doc.get("title", "")
     content = doc.get("content", "")
 
-    header_chunks: List = _header_splitter.split_text(content)
+    sections = _split_on_bold_headers(content)
 
     chunks = []
-    for hchunk in header_chunks:
-        text = hchunk.page_content.strip()
-        if not text:
-            continue
-
-        # Prefer ## label; fall back to ### if no ## was present in this section
-        section = hchunk.metadata.get("h2") or hchunk.metadata.get("h3") or ""
-        
-        if section != "": 
-            print(f"This is section {section}")
-
-        sub_texts = _char_splitter.split_text(text) if len(text) > CHUNK_SIZE else [text]
-
+    for section_label, section_text in sections:
+        sub_texts = (
+            _char_splitter.split_text(section_text)
+            if len(section_text) > CHUNK_SIZE
+            else [section_text]
+        )
         for sub in sub_texts:
             if sub.strip():
-                chunks.append({
-                    "url": url,
-                    "title": title,
-                    "section": section,
-                    "chunk_index": len(chunks),  # 0-based position within this page
-                    "text": sub,
-                })
+                chunks.append(
+                    {
+                        "url": url,
+                        "title": title,
+                        "section": section_label,
+                        "chunk_index": len(chunks),
+                        "text": sub,
+                    }
+                )
 
     return chunks
 
@@ -82,6 +130,7 @@ def chunk_page(doc: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Deduplication helpers
 # ---------------------------------------------------------------------------
+
 
 def _token_set(text: str) -> set[str]:
     return set(text.lower().split())
@@ -102,7 +151,9 @@ def _is_index_url(url: str) -> bool:
     return url.endswith("/index") or url == "index"
 
 
-def deduplicate(all_chunks: list[dict], threshold: float = DEDUP_THRESHOLD) -> list[dict]:
+def deduplicate(
+    all_chunks: list[dict], threshold: float = DEDUP_THRESHOLD
+) -> list[dict]:
     """
     Remove index-page chunks that are near-subsets of a detail-page chunk.
 
@@ -142,7 +193,7 @@ def main() -> None:
     logger.info(f"Processing {len(json_files)} extracted files from {EXTRACTED_DIR}")
 
     all_chunks: list[dict] = []
-    for json_path in json_files[:]:
+    for json_path in json_files:
         try:
             doc = json.loads(json_path.read_text(encoding="utf-8"))
         except Exception as e:
@@ -150,19 +201,19 @@ def main() -> None:
             continue
         all_chunks.extend(chunk_page(doc))
 
-    # logger.info(f"Chunks before dedup: {len(all_chunks)}")
+    logger.info(f"Chunks before dedup: {len(all_chunks)}")
 
-    # clean_chunks = deduplicate(all_chunks)
+    clean_chunks = deduplicate(all_chunks)
 
-    # logger.info(f"Chunks after dedup:  {len(clean_chunks)}")
+    logger.info(f"Chunks after dedup:  {len(clean_chunks)}")
 
-    # # Write one JSON object per line — JSONL format lets ingest.py stream records
-    # # without loading the full file into memory
-    # with OUTPUT_PATH.open("w", encoding="utf-8") as f:
-    #     for chunk in clean_chunks:
-    #         f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+    # Write one JSON object per line — JSONL format lets ingest.py stream records
+    # without loading the full file into memory
+    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
+        for chunk in clean_chunks:
+            f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
 
-    # logger.info(f"Wrote {len(clean_chunks)} chunks → {OUTPUT_PATH}")
+    logger.info(f"Wrote {len(clean_chunks)} chunks → {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
