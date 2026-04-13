@@ -25,7 +25,7 @@ A **local RAG (Retrieval-Augmented Generation)** system built on the **Keras onl
   📄 data/extracted/   (one clean .json per page)
           │
           │  preprocess.py — chunk + deduplicate
-          │  split at markdown headers (one chunk per function/class)
+          │  split at **Bold** section labels (one chunk per logical section)
           │  drop index-page summaries that duplicate detail pages
           ▼
   📋 data/chunks.jsonl  (final clean chunks, ready to embed)
@@ -71,12 +71,12 @@ A **local RAG (Retrieval-Augmented Generation)** system built on the **Keras onl
 | Vector database | ChromaDB | Runs locally, no setup needed |
 | Web scraping | `wget` (system tool) | Reliable recursive mirror of static sites |
 | HTML cleaning | `trafilatura` | Purpose-built for extracting article content from HTML |
-| Chunking | Header-based + LangChain fallback | Respects API doc structure |
+| Chunking | Bold-label–based + LangChain fallback | Respects API doc structure |
 | Secrets | `python-dotenv` | Keeps your API key out of your code |
 
 ### One-line install
 ```bash
-pip install google-genai chromadb langchain langchain-google-genai langchain-community trafilatura python-dotenv
+pip install -r requirements.txt
 ```
 `wget` is a system tool — on macOS: `brew install wget`. On Linux it's usually pre-installed.
 
@@ -88,13 +88,15 @@ pip install google-genai chromadb langchain langchain-google-genai langchain-com
 rag_project/
 ├── .env              ← Your API key goes here (never commit this!)
 ├── config.py         ← All settings in one place
+├── ingest.sh         ← Run the full preprocessing + ingestion pipeline
 ├── scrape.py         ← Step 1: wget mirror of keras.io/api
 ├── extract.py        ← Step 2: HTML → clean JSON via trafilatura
 ├── preprocess.py     ← Step 3: chunk + deduplicate → chunks.jsonl
 ├── ingest.py         ← Step 4: embed chunks + store in ChromaDB
 ├── retriever.py      ← Embed question → search ChromaDB
 ├── generator.py      ← Build prompt → call Gemini → return answer
-├── main.py           ← The thing you actually run
+├── kerag_cli.py      ← Interactive Q&A CLI (modes: naive / retrieval / RAG)
+├── dataset.py        ← Built-in sample queries for testing
 └── data/
     ├── keras_docs/   ← Raw HTML from wget
     ├── extracted/    ← Cleaned JSON, one file per page
@@ -107,9 +109,10 @@ rag_project/
 
 | Setting | Value | What it means |
 |---|---|---|
-| `CHUNK_SIZE` | 800 chars | Each piece of text stored in the DB |
+| `CHUNK_SIZE` | 1000 chars | Max size of each text piece stored in the DB |
 | `CHUNK_OVERLAP` | 100 chars | How much adjacent chunks share (prevents cutting a sentence in half at a boundary) |
 | `TOP_K` | 5 | How many chunks to retrieve per question |
+| `EMBED_DELAY_SECS` | 0.65 s | Sleep between embedding calls to stay under the free-tier rate limit (100 req/min) |
 | `EMBEDDING_MODEL` | `gemini-embedding-001` | Converts text → numbers |
 | `GENERATIVE_MODEL` | `gemini-2.5-flash` | Writes the final answer |
 
@@ -124,7 +127,7 @@ Every chunk in ChromaDB has a **vector** (for search) and **metadata** (for cont
 | `text` | *"Dense layer — applies transformation..."* | Passed to Gemini as context |
 | `url` | `keras.io/api/layers/core/dense` | Shown as a citation link |
 | `title` | `Dense layer` | Human-readable page name |
-| `section` | `## call() method` | Which part of the page this came from |
+| `section` | `Arguments` | Which bold-label section of the page this came from |
 | `chunk_index` | `2` | Which piece of this page |
 
 ---
@@ -132,27 +135,29 @@ Every chunk in ChromaDB has a **vector** (for search) and **metadata** (for cont
 ## How to Use It (Once Built)
 
 ```bash
-# Step 1: Run the full preprocessing + ingestion pipeline
-python main.py --all
+# Step 1: Run the full preprocessing + ingestion pipeline (~1 hour, run once)
+./ingest.sh
 
 # Or run steps individually if something fails
-python main.py --scrape       # download keras docs (~once ever)
-python main.py --extract      # clean HTML → JSON
-python main.py --preprocess   # chunk + deduplicate
-python main.py --ingest       # embed + load into ChromaDB
+python scrape.py        # download keras docs (~once ever)
+python extract.py       # clean HTML → JSON
+python preprocess.py    # chunk + deduplicate
+python ingest.py        # embed + load into ChromaDB
 
 # Step 2: Ask questions
-python main.py
-> What arguments does the Dense layer accept?
-> How does Dropout behave differently during training vs inference?
+python kerag_cli.py
+# Choose a mode from the interactive menu:
+#   1) Naive LLM    — direct query to Gemini, no retrieval
+#   2) Retrieval    — semantic search with citations
+#   3) RAG          — retrieval + Gemini generation with citations
 ```
 
 ---
 
 ## Important Notes
 
-**Why header-based chunking (not character splitting) for API docs:**
-API documentation is already logically structured — each function or class is a natural unit. Splitting at `##` headers keeps each chunk self-contained (signature + description together), which leads to much more precise retrieval than arbitrary character-count splits would.
+**Why bold-label chunking (not character splitting) for API docs:**
+API documentation is already logically structured. When trafilatura converts Keras HTML pages to markdown, the original `h4` section headers (e.g. *Arguments*, *Returns*, *Call arguments*) become standalone bold lines (`**Arguments**`). Splitting on these bold labels keeps each chunk self-contained — signature and its description stay together — which leads to much more precise retrieval than arbitrary character-count splits would.
 
 **Why deduplication matters:**
 The Keras docs have index pages (e.g. `keras.io/api/layers/`) that list and summarize every layer. Each layer also has its own detail page. Without deduplication, you'd end up with two near-identical chunks for every item — the index summary and the full detail. This dilutes retrieval and wastes your embedding quota.
@@ -164,4 +169,4 @@ When embedding document chunks you use `RETRIEVAL_DOCUMENT`, and when embedding 
 The prompt instructs Gemini to answer *only* from the retrieved context. If the answer isn't in the Keras docs, it will say so rather than guessing.
 
 **Free tier limits:**
-The Gemini free tier allows 1,000 embedding requests/day. The full Keras API docs will likely produce several thousand chunks — run `--ingest` over a couple of days if needed, or batch carefully.
+The Gemini free tier allows 100 embedding requests/minute. `ingest.py` automatically throttles itself via `EMBED_DELAY_SECS = 0.65s` between calls (~92 RPM), so you can leave it running unattended. The interactive CLI adds a 12-second gap between generation calls to stay within the 5 requests/minute generation limit.

@@ -15,13 +15,12 @@ Build a local Retrieval-Augmented Generation (RAG) system using Gemini APIs and 
 | Embedding model | `gemini-embedding-001` | `task_type=RETRIEVAL_DOCUMENT` for indexing, `RETRIEVAL_QUERY` for queries |
 | Vector database | `chromadb` | Persistent local storage on disk |
 | Generative model | `gemini-2.5-flash` | Via `google-genai` SDK |
-| Document loading | `langchain-community` | `PyPDFLoader`, `TextLoader` |
 | Chunking | `langchain` | `RecursiveCharacterTextSplitter` |
 | Env management | `python-dotenv` | Load `GOOGLE_API_KEY` from `.env` |
 
 ### Install
 ```bash
-pip install google-genai chromadb langchain langchain-google-genai langchain-community pypdf python-dotenv
+pip install -r requirements.txt
 ```
 
 ---
@@ -34,10 +33,11 @@ pip install google-genai chromadb langchain langchain-google-genai langchain-com
 
 ## Project Structure
 ```
-rag_project/
+KeRAG/
 ├── .env                  # GOOGLE_API_KEY=your_key_here
 ├── specs_claude.md
-├── main.py               # Entry point: CLI loop for Q&A
+├── kerag_cli.py          # Interactive Q&A CLI (modes: naive / retrieval / RAG)
+├── ingest.sh             # Pipeline runner: scrape → extract → preprocess → ingest
 ├── scrape.py             # wget mirror of keras.io/api docs
 ├── extract.py            # trafilatura over .html → clean .json per page
 ├── preprocess.py         # chunk + deduplicate cleaned docs → JSONL output
@@ -45,6 +45,8 @@ rag_project/
 ├── retriever.py          # Query embedding + ChromaDB similarity search
 ├── generator.py          # Prompt construction + Gemini 2.5 Flash call
 ├── config.py             # Constants (chunk size, overlap, top-k, model names, DB path)
+├── dataset.py            # SAMPLE_QUERIES for testing
+├── requirements.txt      # Contains the required Python libraries to run KeRAG
 └── data/
     ├── keras_docs/       # Raw wget mirror output (.html files)
     ├── extracted/        # One .json per page after trafilatura
@@ -103,8 +105,9 @@ pip install trafilatura
 
 #### Implementation notes
 - Walk `data/keras_docs/` recursively for all `.html` files.
-- Use `trafilatura.extract(html, include_formatting=True)` — the `include_formatting=True` flag preserves headers and code blocks, which are critical for the chunking step.
-- Skip files where trafilatura returns `None` (navigation-only pages, redirects). Log skipped files.
+- Extract title via `trafilatura.extract_metadata(html).title` before extracting body content.
+- Use `trafilatura.extract(html, output_format="markdown", include_formatting=True, include_tables=True)` — `output_format="markdown"` and `include_formatting=True` preserve headers and code blocks for the chunking step; `include_tables=True` retains API parameter tables.
+- Skip files where trafilatura returns `None` (navigation-only pages, redirects). Log skipped files. Also skip pages where the extracted content is non-None but empty after stripping.
 - Reconstruct `url` from the file path by stripping the `data/keras_docs/` prefix and `.html` extension.
 - Write output as `data/extracted/<sanitized_filename>.json`.
 
@@ -112,14 +115,14 @@ CLI: `python extract.py`
 
 ---
 
-### preprocess.py — Chunk + Deduplicate (REVIEW BY OWNER PRIOR OF IMPLEMENTING)
+### preprocess.py — Chunk + Deduplicate
 
 Reads all `.json` files from `data/extracted/`, chunks them, deduplicates, and writes `data/chunks.jsonl`.
 
 #### Chunking strategy
-Split on **markdown headers** (`##`, `###`) as primary split points — each function signature + its description becomes one chunk. This is preferable to character-count splitting for API docs because each function/class is a self-contained unit of meaning.
+Split on **bold label lines** (lines whose entire content is `**Label**`, e.g. `**Arguments**`, `**Returns**`) as primary split points — each logical section of an API page becomes one chunk. This pattern is what trafilatura's markdown output produces for Keras doc section headers and is preferable to raw `##`/`###` splitting for these pages.
 
-Fall back to `RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)` for any section that still exceeds `CHUNK_SIZE` after header splitting.
+Fall back to `RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)` for any section that still exceeds `CHUNK_SIZE` characters after bold-header splitting.
 
 #### Deduplication strategy
 Index pages (e.g. `keras.io/api/layers/`) list items that have their own dedicated detail pages. These create near-duplicate content in the vector DB, which dilutes retrieval quality.
@@ -149,9 +152,14 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 GENERATIVE_MODEL = "gemini-2.5-flash"
 CHROMA_DB_PATH = "./chroma_db"
 COLLECTION_NAME = "rag_documents"
-CHUNK_SIZE = 800
+CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 100
-TOP_K = 5
+TOP_K = 3
+
+# Gemini free-tier embedding limit: 100 requests per minute.
+# 0.65 s/call ≈ 92 RPM — stays under the cap with a small safety buffer.
+# Set to 0 to disable throttling (e.g. in unit tests or paid-tier accounts).
+EMBED_DELAY_SECS = 0.65
 ```
 
 ---
@@ -198,7 +206,7 @@ vector = result.embeddings[0].values
 ### Steps
 1. Embed the user query with `task_type="RETRIEVAL_QUERY"`.
 2. Query ChromaDB collection with `n_results=TOP_K`.
-3. Return list of dicts: `{"text": ..., "source": ..., "page_number": ..., "chunk_index": ...}`.
+3. Return list of dicts: `{"text": ..., "source": ..., "section": ..., "chunk_index": ..., "distance": ...}`.
 
 ### Embedding Call
 ```python
@@ -223,15 +231,39 @@ results = collection.query(
 
 ## generator.py — Answer Generation
 
-### Prompt Template
+Two public functions. The caller (`kerag_cli.py`) passes the shared `genai.Client`.
+
+### `naive_generate(client, query) -> str`
+Direct LLM call with no retrieval context. Used in mode 1.
+Returns an error string (not an exception) on API failure.
+
+### `rag_generate(client, query, chunks) -> str`
+Builds a grounded prompt from retrieved chunks and calls Gemini. Used in mode 3.
+Each chunk in `chunks` is a dict with keys: `text`, `source`, `section`, `chunk_index`, `distance`.
+
+### Prompt Templates
+**Naive:**
 ```
-You are a helpful assistant. Answer the user's question using ONLY the context provided below.
-If the answer is not contained in the context, say "I don't have enough information to answer that."
+You are a helpful Keras documentation assistant.
+Answer the following question as clearly and concisely as possible.
+
+Question: {query}
+
+Answer:
+```
+
+**RAG:**
+```
+You are a helpful Keras documentation assistant. Answer the user's question
+using ONLY the context provided below. If the answer is not contained in the
+context, say "I don't have enough information to answer that."
 
 Context:
-{joined_chunk_texts}
+[1] Source: {url} | Section: {section}
+{chunk_text}
+...
 
-Question: {user_question}
+Question: {query}
 
 Answer:
 ```
@@ -240,41 +272,64 @@ Answer:
 ```python
 from google import genai
 
-client = genai.Client()
 response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=prompt
+    model=GENERATIVE_MODEL,
+    contents=prompt,
 )
 return response.text
 ```
 
 ---
 
-## main.py — Entry Point
+## kerag_cli.py — Interactive Q&A Entry Point
 
 ### Behaviour
-- `--scrape`: run `scrape.py` (wget mirror).
-- `--extract`: run `extract.py` (trafilatura over HTML).
-- `--preprocess`: run `preprocess.py` (chunk + deduplicate).
-- `--ingest`: run `ingest.py` (embed + store in ChromaDB).
-- `--all`: run all four steps in sequence.
-- Default (no flags): interactive Q&A loop.
-- Print retrieved source URL and section as citations alongside the answer.
+One `genai.Client()` is created at startup and shared across all modes —
+both retrieval (query embedding) and generation use the same client instance.
+All three modes require `GOOGLE_API_KEY` because query embedding calls the
+Gemini API.
+
+A global rate-limit guard (`_RATE_LIMIT_DELAY = 12s`) ensures at least 12 seconds
+pass between consecutive API calls, respecting the Gemini free tier's
+5 requests-per-minute generation limit. If enough time has already elapsed
+(e.g. the user spent time at the menu), no sleep occurs.
+
+#### Modes
+| # | Name | Description |
+|---|---|---|
+| 1 | Naive LLM | Query sent directly to Gemini with no retrieval context |
+| 2 | Retrieval | Semantic search via ChromaDB; results printed with source/section citations |
+| 3 | RAG | Retrieval + Gemini generation grounded in the top-K chunks |
+
+For each mode the user can either type a single custom query or press Enter
+to run all queries in `dataset.SAMPLE_QUERIES`.
 
 ### CLI Usage
 ```bash
-# Full pipeline from scratch
-python main.py --all
-
-# Or step by step
-python main.py --scrape
-python main.py --extract
-python main.py --preprocess
-python main.py --ingest
-
-# Start Q&A
-python main.py
+python kerag_cli.py
 ```
+
+---
+
+## ingest.sh — Ingestion Pipeline Runner
+
+Runs the four preprocessing and ingestion steps in sequence.
+Re-running is safe: all steps are idempotent.
+
+```bash
+chmod +x ingest.sh
+./ingest.sh
+```
+
+Steps executed:
+```
+[1/4] scrape.py      → wget mirror  → data/keras_docs/
+[2/4] extract.py     → HTML → JSON  → data/extracted/
+[3/4] preprocess.py  → chunk + dedup → data/chunks.jsonl
+[4/4] ingest.py      → embed + upsert → chroma_db/
+```
+
+To skip scraping when the mirror already exists, comment out step 1 in the script.
 
 ---
 
