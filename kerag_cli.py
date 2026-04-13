@@ -20,6 +20,7 @@ Usage:
 
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -39,6 +40,32 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 _DIVIDER = "=" * 60
+_RATE_LIMIT_DELAY = 12  # seconds — Gemini free tier: 5 requests/minute
+
+# Persists across menu selections so the rate-limit window is shared globally.
+_last_api_call: float | None = None
+
+
+def _rate_limit_wait() -> None:
+    """Sleep only the remaining portion of the rate-limit window, if needed.
+
+    If enough time has already elapsed since the last API call (e.g. the user
+    spent time typing at the menu or composing their query), no sleep occurs.
+    """
+    global _last_api_call
+    if _last_api_call is None:
+        return
+    elapsed = time.monotonic() - _last_api_call
+    remaining = _RATE_LIMIT_DELAY - elapsed
+    if remaining > 0:
+        print(f"Rate limit: waiting {remaining:.1f}s before next API call...\n")
+        time.sleep(remaining)
+
+
+def _record_api_call() -> None:
+    """Stamp the time of the most recent API call."""
+    global _last_api_call
+    _last_api_call = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +111,11 @@ def run_naive(client: genai.Client) -> None:
     print(f"\nRunning naive LLM mode on {label}...\n")
 
     for query in queries:
+        _rate_limit_wait()
         print(_DIVIDER)
         print(f"Question: {query}\n")
         answer = naive_generate(client, query)
+        _record_api_call()
         print("Answer:")
         print(answer)
         print()
@@ -98,10 +127,12 @@ def run_retrieval(client: genai.Client) -> None:
     print(f"\nRunning retrieval-only mode on {label}...\n")
 
     for query in queries:
+        _rate_limit_wait()
         print(_DIVIDER)
         print(f"Question: {query}\n")
 
         chunks = retrieve(client, query)
+        _record_api_call()
         if not chunks:
             print(
                 "No results found. "
@@ -124,11 +155,13 @@ def run_rag(client: genai.Client) -> None:
     print(f"\nRunning RAG mode on {label}...\n")
 
     for query in queries:
+        _rate_limit_wait()
         print(_DIVIDER)
         print(f"Question: {query}\n")
 
         chunks = retrieve(client, query)
         if not chunks:
+            _record_api_call()
             print(
                 "No results found. "
                 "Make sure the ChromaDB collection is populated — run ./ingest.sh first.\n"
@@ -136,6 +169,7 @@ def run_rag(client: genai.Client) -> None:
             continue
 
         answer = rag_generate(client, query, chunks)
+        _record_api_call()
         print("Answer:")
         print(answer)
 
