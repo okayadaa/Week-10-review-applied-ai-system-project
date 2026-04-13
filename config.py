@@ -4,7 +4,7 @@ CHROMA_DB_PATH = "./chroma_db"
 COLLECTION_NAME = "rag_documents"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 100
-TOP_K = 5
+TOP_K = 3
 
 # Gemini free-tier embedding limit: 100 requests per minute.
 # 0.65 s/call ≈ 92 RPM — stays under the cap with a small safety buffer.
