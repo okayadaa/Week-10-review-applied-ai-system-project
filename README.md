@@ -1,5 +1,26 @@
 # KeRAG: All Local Keras API Docs RAG-MCP Server
 
+## TF Peer Review:
+## Part 1:
+The project presents a well structured RAG pipeline, achieivng a simple to follow both the preprocessing and query phases from end to end. The integration of AI is deliberately implemented specifically through the use of gemini-embedding-001 and and Gemini 2.5 Flash for grounded answer generation, which guarantees responses are based on Keras documentation. One significant strength is the clarification of the tech stack and configuration that communicates pratical implementation decisions in an accesible way. But one thing that can be improved from explicit evaluation of system performance could be testing retrival accurancy and inspecting how different TOP_K value impact results. Whereas, design choices are well interpreted, adding observational validation or examples of system behavior would reinforce the depth.
+## Part 2:
+Glows🌟
+The project creates a sharp technical choice by using bold label chunking that keeps related parts of Keras docs together and improves search accuracy. This demonstrates a good habit of designing based on the structure of the data.
+
+The system is detailed in a clear and organized way, specifically with systematically pipeline and tech stack. This makes it simpler to understand and provides a strong example of good technical communication.
+
+Grows🌱
+The project could improve by showing how well it operates in practice. Adding a simple example would help demonstrate if the system is accurate.
+
+Action step💡
+Add a few example questions and show what the system retrieves and answers 
+## Part 3:
+Probing Questions:
+1. what specific problem does your AI solve that simple search or keyword system could not?
+2. If you changed a key setting (i.e chuck_size or TOP_K), how would that affect your results and why?
+3. How do you know the retrieved chunks are relevant to the user's question?
+
+
 ## What Are We Building?
 A **local RAG (Retrieval-Augmented Generation)** system built on the **Keras online API docs**. It scrapes the docs from the web, cleans them up, stores them in a local vector database, and lets you ask natural language questions about Keras — grounded in the actual documentation.
 
